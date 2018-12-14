@@ -24,6 +24,15 @@ class OpenAPIClientException(Exception):
         self.message = message
         self.code = code
 
+#cmk added
+class OpenAPIClientDetailedException(OpenAPIClientException):
+    """Raised when there is an error executing requests"""
+    def __init__(self, message, code=500, http_resp : requests.Response = None):
+        super().__init__(message=message, code=code)
+        if http_resp is None:
+            raise ValueError()
+        else:
+            self.http_resp = http_resp
 
 class OpenAPIException(Exception):
     """Raised when there is an error executing requests"""
@@ -191,7 +200,9 @@ class OpenAPICli(object):
                     logging.debug(f">>>> ENDPOINT {target_endpoint}\n >> QUERY \n{query_params}\n >> BODY \n{post_body} \n >> REPLY \n{http_reply.text}", )
             # unknown error
             if api_response is None:
-                raise OpenAPIClientException(f"Unknown error {http_reply.status_code} - {http_reply.text}", code=http_reply.status_code)
+                raise OpenAPIClientDetailedException(f"Unknown error {http_reply.status_code} - {http_reply.text}",
+                                                     code=http_reply.status_code,
+                                                     http_resp=http_reply) #cmk edited
             # success
             if http_reply.status_code == 200:
                 # parse the http_reply
@@ -204,7 +215,9 @@ class OpenAPICli(object):
                 jr = http_reply.json()
                 return namedtuple(api_response.schema, jr.keys())(**jr)
             # error
-            raise OpenAPIClientException(f"Error: {api_response.desc}", code=http_reply.status_code)
+            raise OpenAPIClientDetailedException(f"Error: {api_response.desc}",
+                                         code=http_reply.status_code,
+                                         http_resp=http_reply)
         # register the method
         api_method.__name__ = api.name
         api_method.__doc__ = api.doc
