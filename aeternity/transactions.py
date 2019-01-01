@@ -1,4 +1,5 @@
-from aeternity.hashing import _int, _binary, _id, encode, decode, encode_rlp, hash_encode, contract_id
+from typing import Union
+from aeternity.hashing import _int, _binary, _id, encode, decode, encode_rlp, hash_encode, contract_id, decode_rlp
 from aeternity.openapi import OpenAPICli
 from aeternity.config import ORACLE_DEFAULT_TTL_TYPE_DELTA
 
@@ -93,6 +94,24 @@ class TxSigner:
         # return the
         return encoded_signed_tx, encoded_signature, tx_hash
 
+    #cmk added
+    def cosign_encode_transaction(self, tx, other_account):
+        """
+        Sign, encode and compute the hash of a transaction
+        :return: encoded_signed_tx, encoded_signatures, tx_hash
+        """
+        transaction = decode(tx.tx) if hasattr(tx, "tx") else decode(tx)
+        #sign with both keys
+        signature1 = self.account.sign(_binary(self.network_id) + transaction)
+        signature2 = other_account.sign(_binary(self.network_id) + transaction)
+        #encode
+        tag = bytes([OBJECT_TAG_SIGNED_TRANSACTION])
+        vsn = bytes([VSN])
+        encoded_cosigned_tx = encode_rlp("tx", [tag, vsn, sorted([signature1, signature2]), transaction])
+
+        return (encoded_cosigned_tx,
+                [encode("sg", signature1), encode("sg", signature2)],
+                TxBuilder.compute_tx_hash(encoded_cosigned_tx))
 
 class TxBuilder:
     """
@@ -116,6 +135,195 @@ class TxBuilder:
         """
         signed = decode(signed_tx)
         return hash_encode("th", signed)
+
+    #cmk added
+    def tx_channel_close_solo(self, account_id : str,
+                              state : Union[str, bytes],
+                              poi : str,
+                              channel_id : str,
+                              ttl : int,
+                              fee : int,
+                              nonce : int):
+
+        if self.native_transactions:
+            if isinstance(state, str):
+                state = decode(state)
+
+            tx = [
+                _int(OBJECT_TAG_CHANNEL_CLOSE_SOLO_TRANSACTION),
+                _int(VSN),
+                _id(ID_TAG_CHANNEL, channel_id),
+                _id(ID_TAG_ACCOUNT, account_id), #from_id
+                _binary(state), #payload
+                _binary(decode(poi)),
+                _int(ttl),
+                _int(fee),
+                _int(nonce)
+            ]
+            tx = encode_rlp("tx", tx)
+            return tx
+        else:
+            if not isinstance(state, str):
+                state = encode("tx", state)
+
+            tx = self.api.post_channel_close_solo(body={
+                "from_id": account_id,
+                "payload": state,
+                "fee": fee,
+                "poi": poi,
+                "channel_id": channel_id,
+                "ttl": ttl,
+                "nonce": nonce
+            }).tx
+
+            #compensate bug in api
+            tx = decode_rlp(tx)
+            tx[4] = decode(tx[4].decode("UTF-8")) #the field 4, payload is a string such as "tx_...." encoding the payload when it should be a binary()
+            tx = encode_rlp("tx",tx)
+            return tx
+
+    #cmk added
+    def tx_channel_settle(self,
+                          channel_id: str,
+                          account_id : str,
+                          initiator_amount_final : int,
+                          responder_amount_final : int,
+                          ttl : int,
+                          fee : int,
+                          nonce : int):
+
+        if self.native_transactions:
+            tx = [
+                _int(OBJECT_TAG_CHANNEL_SETTLE_TRANSACTION),
+                _int(VSN),
+                _id(ID_TAG_CHANNEL, channel_id),
+                _id(ID_TAG_ACCOUNT, account_id), #from_id
+                _int(initiator_amount_final),
+                _int(responder_amount_final),
+                _int(ttl),
+                _int(fee),
+                _int(nonce)
+            ]
+            return encode_rlp("tx", tx)
+        else:
+            tx = self.api.post_channel_settle(body={
+                "from_id": account_id,
+                "responder_amount_final": responder_amount_final,
+                "fee": fee,
+                "initiator_amount_final": initiator_amount_final,
+                "channel_id": channel_id,
+                "ttl": ttl,
+                "nonce": nonce
+            }).tx
+            return tx
+
+    def tx_channel_close_mutual(self,
+                                account_id : str,
+                                channel_id : str,
+                                initiator_amount_final : int,
+                                responder_amount_final : int,
+                                ttl : int,
+                                fee : int,
+                                nonce : int):
+        if self.native_transactions:
+            tx = [
+                _int(OBJECT_TAG_CHANNEL_CLOSE_MUTUAL_TRANSACTION),
+                _int(VSN),
+                _id(ID_TAG_CHANNEL, channel_id),
+                _id(ID_TAG_ACCOUNT, account_id),
+                _int(initiator_amount_final),
+                _int(responder_amount_final),
+                _int(ttl),
+                _int(fee),
+                _int(nonce)
+            ]
+            return encode_rlp("tx", tx)
+        else:
+            tx = self.api.post_channel_close_mutual(body={
+                "from_id": account_id,
+                "responder_amount_final": initiator_amount_final,
+                "fee": fee,
+                "initiator_amount_final": responder_amount_final,
+                "channel_id": channel_id,
+                "ttl": ttl,
+                "nonce" : nonce
+            }).tx
+        return tx
+
+    #cmk added
+    def tx_channel_slash(self,
+                         channel_id : str,
+                         account_id : str,
+                         state : Union[str, bytes],
+                         poi : str,
+                         ttl : int,
+                         fee : int,
+                         nonce : int):
+        if self.native_transactions:
+            if isinstance(state, str):
+                state = decode(state)
+
+            tx = [
+                _int(OBJECT_TAG_CHANNEL_SLASH_TRANSACTION),
+                _int(VSN),
+                _id(ID_TAG_CHANNEL, channel_id),
+                _id(ID_TAG_ACCOUNT, account_id), #from_id
+                _binary(state), #payload
+                _binary(decode(poi)),
+                _int(ttl),
+                _int(fee),
+                _int(nonce)
+            ]
+            return encode_rlp("tx", tx)
+        else:
+            if not isinstance(state, str):
+                state = encode("tx", state)
+
+            tx = self.api.post_channel_slash(body={
+                "from_id" : account_id,
+                "channel_id" : channel_id,
+                "payload" : state,
+                "poi" : poi,
+                "ttl" : ttl,
+                "fee" : fee,
+                "nonce" : nonce
+            }).tx
+
+            return tx
+
+    #cmk added - untested - speculative
+    def tx_channel_solo_force_progress(self,
+                                  channel_id : str,
+                                  account_id : str,
+                                  state : Union[str, bytes],
+                                  new_round : int,
+                                  contract_call_update : str,
+                                  new_state_hash : str,
+                                  offchain_trees : str,
+                                  ttl : int,
+                                  fee : int,
+                                  nonce : int):
+        if self.native_transactions:
+            if isinstance(state, str):
+                state = decode(state)
+
+            tx = [ _int(OBJECT_TAG_CHANNEL_FORCE_PROGRESS_TRANSACTION),
+                   _int(VSN),
+                   _id(ID_TAG_CHANNEL, channel_id),
+                   _id(ID_TAG_ACCOUNT, account_id), #from_id
+                   _binary(state), #payload
+                   _int(new_round), #round
+                   _binary(decode(contract_call_update)),
+                   _binary(decode(new_state_hash)),
+                   _binary(decode(offchain_trees)), #actually trees() format and not binary
+                   _int(ttl),
+                   _int(fee),
+                   _int(nonce)
+                   ]
+            return tx
+        else:
+            raise NotImplementedError("This version of SDK assumes Epoch 1.1.1, whose REST API does not implement " +
+                                      "creation of Channel Force Progress Transactions")
 
     def tx_spend(self, account_id, recipient_id, amount, payload, fee, ttl, nonce)-> str:
         """
