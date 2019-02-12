@@ -1,7 +1,6 @@
 import logging
 import time
 import random
-from collections import namedtuple
 
 from aeternity.transactions import TxSigner
 from aeternity.signing import Account
@@ -15,11 +14,11 @@ logger = logging.getLogger(__name__)
 logging.root.setLevel(logging.DEBUG)
 
 
-class EpochRequestError(Exception):
+class NodeRequestError(Exception):
     pass
 
 
-class EpochClient:
+class NodeClient:
 
     exception_by_reason = {
         'Name not found': NameNotAvailable,
@@ -91,7 +90,7 @@ class EpochClient:
     def get_next_nonce(self, account_address):
         """
         Get the next nonce to be used for a transaction for an account
-        :param epoch: the epoch client
+        :param node: the node client
         :return: the next nonce for an account
         """
         try:
@@ -115,10 +114,7 @@ class EpochClient:
         to a Block
         """
         b = self.api.get_top_block()
-        if hasattr(b, 'key_block'):
-            return namedtuple('Block', sorted(b.key_block))(**b.key_block)
-        else:
-            return namedtuple('Block', sorted(b.micro_block))(**b.micro_block)
+        return b.key_block if hasattr(b, 'key_block') else b.micro_block
 
     def get_block_by_hash(self, hash=None):
         """

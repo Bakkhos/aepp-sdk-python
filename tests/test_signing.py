@@ -1,7 +1,8 @@
 from pytest import raises
-from tests import ACCOUNT, EPOCH_CLI, tempdir, TEST_FEE, TEST_TTL
-from aeternity.signing import Account
+from tests import ACCOUNT, NODE_CLI, tempdir, TEST_FEE, TEST_TTL
+from aeternity.signing import Account, is_signature_valid
 from aeternity.utils import is_valid_hash
+from aeternity import hashing
 import os
 
 
@@ -10,13 +11,13 @@ def test_signing_create_transaction_signature():
     new_account = Account.generate()
     receiver_address = new_account.get_address()
     # create a spend transaction
-    nonce, ttl = EPOCH_CLI._get_nonce_ttl(ACCOUNT.get_address(), TEST_TTL)
-    tx = EPOCH_CLI.tx_builder.tx_spend(ACCOUNT.get_address(), receiver_address, 321, "test test ", TEST_FEE, ttl, nonce)
-    tx_signed, signature, tx_hash = EPOCH_CLI.sign_transaction(ACCOUNT, tx)
+    nonce, ttl = NODE_CLI._get_nonce_ttl(ACCOUNT.get_address(), TEST_TTL)
+    tx = NODE_CLI.tx_builder.tx_spend(ACCOUNT.get_address(), receiver_address, 321, "test test ", TEST_FEE, ttl, nonce)
+    tx_signed, signature, tx_hash = NODE_CLI.sign_transaction(ACCOUNT, tx)
     # this call will fail if the hashes of the transaction do not match
-    EPOCH_CLI.broadcast_transaction(tx_signed)
+    NODE_CLI.broadcast_transaction(tx_signed)
     # make sure this works for very short block times
-    spend_tx = EPOCH_CLI.get_transaction_by_hash(hash=tx_hash)
+    spend_tx = NODE_CLI.get_transaction_by_hash(hash=tx_hash)
     assert spend_tx.signatures[0] == signature
 
 
@@ -71,3 +72,26 @@ def test_signing_keystore_save_load_wrong_pwd():
         with raises(ValueError):
             a = Account.from_keystore(path, "nononon")
             assert a.get_address() == ACCOUNT.get_address()
+
+
+def test_signing_is_signature_valid():
+    sg_ae = "sg_6cXUU8rimh8B3byLHJA9SaG29uRggtyrpGi5YAFiL9cJUoVtMX4P4kpd4UPTjiGXYSaquSN3gidJ73U8CtfweQ14GFgsC"
+    account_id = "ak_axjxzUJpj9siJDQKZrBFNTvQLR2JwcZoVPjgdCQdnGUtwf66r"
+
+    sg_b64 = "KuZVJ8kK6xCmujLfd8AjU3IfENn1WwcQRA0hI/WWzyXp97zerFg9XRx/ICHcHRGmvxstsul/QEDma2uHf6DIAEcr8Vs="
+    account_b64 = "TRza0pA9oaZw7tltPULKlkRaGV2qXT9vJx9q2HGY4Lom4qR3"
+
+    msg = "aeternity".encode("utf-8")
+
+    assert is_signature_valid(account_id, sg_ae, msg)
+    assert is_signature_valid(
+        hashing._base64_decode(account_b64),
+        hashing._base64_decode(sg_b64),
+        msg)
+
+    msg = "wrong".encode("utf-8")
+    assert not is_signature_valid(account_id, sg_ae, msg)
+    assert not is_signature_valid(
+        hashing._base64_decode(account_b64),
+        hashing._base64_decode(sg_b64),
+        msg)
