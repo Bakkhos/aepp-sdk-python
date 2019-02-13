@@ -1,4 +1,4 @@
-from typing import Union
+from typing import Union, Tuple
 from aeternity.hashing import _int, _binary, _id, encode, decode, encode_rlp, hash_encode, contract_id, decode_rlp
 from aeternity.openapi import OpenAPICli
 from aeternity.config import ORACLE_DEFAULT_TTL_TYPE_DELTA
@@ -488,7 +488,7 @@ class TxBuilder:
 
     # CONTRACTS
 
-    def tx_contract_create(self, account_id, code, call_data, amount, deposit, gas, gas_price, vm_version, fee, ttl, nonce)-> str:
+    def tx_contract_create(self, account_id, code, call_data, amount, deposit, gas, gas_price, vm_version, fee, ttl, nonce)-> Tuple[str, str]:
         """
         Create a contract transaction
         :param account_id: the account creating the contract
@@ -504,11 +504,13 @@ class TxBuilder:
         :param nonce: the nonce of the account for the transaction
         """
 
-        if self.native_transactions:
+        if self.native_transactions: #cmk fixed errors
             tx = [
-                _id(idf.account_id),
+                _int(idf.OBJECT_TAG_CONTRACT_CREATE_TRANSACTION),
+                _int(idf.VSN),
+                _id(idf.ID_TAG_ACCOUNT, account_id),
                 _int(nonce),
-                _binary(code),
+                _binary(decode(code)),       #cmk added decode()
                 _int(vm_version),
                 _int(fee),
                 _int(ttl),
@@ -516,10 +518,10 @@ class TxBuilder:
                 _int(amount),
                 _int(gas),
                 _int(gas_price),
-                _binary(call_data),
+                _binary(decode(call_data)), #cmk added decode()
             ]
-            return encode_rlp(idf.TRANSACTION, tx), contract_id(idf.account_id, nonce)
-        # use internal endpoints transaction
+            return encode_rlp(idf.TRANSACTION, tx), contract_id(account_id, nonce)
+        #use internal endpoints transaction
         body = dict(
             owner_id=account_id,
             amount=amount,
@@ -552,18 +554,20 @@ class TxBuilder:
         :param ttl: the ttl of the transaction
         :param nonce: the nonce of the account for the transaction
         """
-        if self.native_transactions:
+        if self.native_transactions: #cmk fixed
             tx = [
-                _id(idf.account_id),
+                _int(idf.OBJECT_TAG_CONTRACT_CALL_TRANSACTION),
+                _int(idf.VSN),
+                _id(idf.ID_TAG_ACCOUNT, account_id),
                 _int(nonce),
-                _id(idf.contract_id),
+                _id(idf.ID_TAG_CONTRACT, contract_id),
                 _int(vm_version),
                 _int(fee),
                 _int(ttl),
                 _int(amount),
                 _int(gas),
                 _int(gas_price),
-                _binary(call_data),
+                _binary(decode(call_data)), #cmk added decode()
             ]
             return encode_rlp(idf.TRANSACTION, tx)
         # use internal endpoints transaction
