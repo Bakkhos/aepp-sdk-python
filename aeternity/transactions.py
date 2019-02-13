@@ -49,8 +49,8 @@ class TxSigner:
         signature1 = self.account.sign(_binary(self.network_id) + transaction)
         signature2 = other_account.sign(_binary(self.network_id) + transaction)
         #encode
-        tag = bytes([OBJECT_TAG_SIGNED_TRANSACTION])
-        vsn = bytes([VSN])
+        tag = bytes([idf.OBJECT_TAG_SIGNED_TRANSACTION])
+        vsn = bytes([idf.VSN])
         encoded_cosigned_tx = encode_rlp("tx", [tag, vsn, sorted([signature1, signature2]), transaction])
 
         return (encoded_cosigned_tx,
@@ -94,10 +94,10 @@ class TxBuilder:
                 state = decode(state)
 
             tx = [
-                _int(OBJECT_TAG_CHANNEL_CLOSE_SOLO_TRANSACTION),
-                _int(VSN),
-                _id(ID_TAG_CHANNEL, channel_id),
-                _id(ID_TAG_ACCOUNT, account_id), #from_id
+                _int(idf.OBJECT_TAG_CHANNEL_CLOSE_SOLO_TRANSACTION),
+                _int(idf.VSN),
+                _id(idf.ID_TAG_CHANNEL, channel_id),
+                _id(idf.ID_TAG_ACCOUNT, account_id), #from_id
                 _binary(state), #payload
                 _binary(decode(poi)),
                 _int(ttl),
@@ -138,10 +138,10 @@ class TxBuilder:
 
         if self.native_transactions:
             tx = [
-                _int(OBJECT_TAG_CHANNEL_SETTLE_TRANSACTION),
-                _int(VSN),
-                _id(ID_TAG_CHANNEL, channel_id),
-                _id(ID_TAG_ACCOUNT, account_id), #from_id
+                _int(idf.OBJECT_TAG_CHANNEL_SETTLE_TRANSACTION),
+                _int(idf.VSN),
+                _id(idf.ID_TAG_CHANNEL, channel_id),
+                _id(idf.ID_TAG_ACCOUNT, account_id), #from_id
                 _int(initiator_amount_final),
                 _int(responder_amount_final),
                 _int(ttl),
@@ -171,10 +171,10 @@ class TxBuilder:
                                 nonce : int):
         if self.native_transactions:
             tx = [
-                _int(OBJECT_TAG_CHANNEL_CLOSE_MUTUAL_TRANSACTION),
-                _int(VSN),
-                _id(ID_TAG_CHANNEL, channel_id),
-                _id(ID_TAG_ACCOUNT, account_id),
+                _int(idf.OBJECT_TAG_CHANNEL_CLOSE_MUTUAL_TRANSACTION),
+                _int(idf.VSN),
+                _id(idf.ID_TAG_CHANNEL, channel_id),
+                _id(idf.ID_TAG_ACCOUNT, account_id),
                 _int(initiator_amount_final),
                 _int(responder_amount_final),
                 _int(ttl),
@@ -208,10 +208,10 @@ class TxBuilder:
                 state = decode(state)
 
             tx = [
-                _int(OBJECT_TAG_CHANNEL_SLASH_TRANSACTION),
-                _int(VSN),
-                _id(ID_TAG_CHANNEL, channel_id),
-                _id(ID_TAG_ACCOUNT, account_id), #from_id
+                _int(idf.OBJECT_TAG_CHANNEL_SLASH_TRANSACTION),
+                _int(idf.VSN),
+                _id(idf.ID_TAG_CHANNEL, channel_id),
+                _id(idf.ID_TAG_ACCOUNT, account_id), #from_id
                 _binary(state), #payload
                 _binary(decode(poi)),
                 _int(ttl),
@@ -251,10 +251,10 @@ class TxBuilder:
             if isinstance(state, str):
                 state = decode(state)
 
-            tx = [ _int(OBJECT_TAG_CHANNEL_FORCE_PROGRESS_TRANSACTION),
-                   _int(VSN),
-                   _id(ID_TAG_CHANNEL, channel_id),
-                   _id(ID_TAG_ACCOUNT, account_id), #from_id
+            tx = [ _int(idf.OBJECT_TAG_CHANNEL_FORCE_PROGRESS_TRANSACTION),
+                   _int(idf.VSN),
+                   _id(idf.ID_TAG_CHANNEL, channel_id),
+                   _id(idf.ID_TAG_ACCOUNT, account_id), #from_id
                    _binary(state), #payload
                    _int(new_round), #round
                    _binary(decode(contract_call_update)),
