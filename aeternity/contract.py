@@ -43,8 +43,9 @@ class Contract:
                 gas_price=config.CONTRACT_DEFAULT_GAS_PRICE,
                 fee=config.DEFAULT_FEE,
                 vm_version=config.CONTRACT_DEFAULT_VM_VERSION,
-                tx_ttl=config.DEFAULT_TX_TTL):
-        """Call a sophia contract"""
+                tx_ttl=config.DEFAULT_TX_TTL,
+                synchronous = True): #cmk added option, default synchronous is previous behaviour
+        """Call a sophia contract."""
 
         if not utils.is_valid_hash(self.address, prefix=CONTRACT_ID):
             raise ValueError("Missing contract id")
@@ -62,11 +63,28 @@ class Contract:
             tx_signed, sg, tx_hash = self.client.sign_transaction(account, tx)
             # post the transaction to the chain
             self.client.broadcast_transaction(tx_signed, tx_hash)
+
+            if synchronous and not self.client.blocking_mode:
+                self.client.wait_for_transaction(tx_hash) #cmk added - wait to avoid race condition in sync mode
+
             # unsigned transaction of the call
-            call_obj = self.client.get_transaction_info_by_hash(hash=tx_hash)
+            call_obj = self.client.get_transaction_info_by_hash(hash=tx_hash) if synchronous else None #cmk edited
             return tx, tx_signed, sg, tx_hash, call_obj
         except OpenAPIClientException as e:
             raise ContractError(e)
+
+    #cmk added
+    def tx_call_result(self, tx_hash):
+        """
+        Get result of a previously mined contract call transaction, or None if not mined.
+        """
+        try:
+            return self.client.get_transaction_info_by_hash(hash=tx_hash)
+        except OpenAPIClientException as e:
+            if e.code == 404:
+                return None
+            else:
+                raise e
 
     def tx_create(self,
                   account,
