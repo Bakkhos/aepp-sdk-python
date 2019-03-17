@@ -1,6 +1,7 @@
-from aeternity.openapi import OpenAPIClientException
-from aeternity import utils, config
-from aeternity.identifiers import CONTRACT_ID
+from aeternity.openapi import OpenAPIClientException, UnsupportedNodeVersion
+from aeternity import utils, defaults, hashing
+from aeternity.identifiers import CONTRACT_ID, CONTRACT_ROMA_VM, CONTRACT_ROMA_ABI, CONTRACT_MINERVA_VM, CONTRACT_MINERVA_ABI
+import semver
 
 
 class ContractError(Exception):
@@ -38,19 +39,24 @@ class Contract:
             self.bytecode = self.compile(self.source_code)
 
     def tx_call(self, account, function, arg,
-                amount=config.CONTRACT_DEFAULT_AMOUNT,
-                gas=config.CONTRACT_DEFAULT_GAS,
-                gas_price=config.CONTRACT_DEFAULT_GAS_PRICE,
-                fee=config.DEFAULT_FEE,
-                vm_version=config.CONTRACT_DEFAULT_VM_VERSION,
-                tx_ttl=config.DEFAULT_TX_TTL,
+                amount=defaults.CONTRACT_AMOUNT,
+                gas=defaults.CONTRACT_GAS,
+                gas_price=defaults.CONTRACT_GAS_PRICE,
+                fee=defaults.FEE,
+                vm_version=None,
+                abi_version=None,
+                tx_ttl=defaults.TX_TTL,
                 synchronous = True): #cmk added option, default synchronous is previous behaviour
-        """Call a sophia contract."""
+        """Call a sophia contract"""
 
         if not utils.is_valid_hash(self.address, prefix=CONTRACT_ID):
             raise ValueError("Missing contract id")
 
         try:
+            # retrieve the correct vm/abi version
+            vm, abi = self._get_vm_abi_versions()
+            vm_version = vm if vm_version is None else vm_version
+            abi_version = abi if abi_version is None else abi_version
             # prepare the call data
             call_data = self.encode_calldata(function, arg)
             # get the transaction builder
@@ -58,18 +64,23 @@ class Contract:
             # get the account nonce and ttl
             nonce, ttl = self.client._get_nonce_ttl(account.get_address(), tx_ttl)
             # build the transaction
-            tx = txb.tx_contract_call(account.get_address(), self.address, call_data, function, arg, amount, gas, gas_price, vm_version, fee, ttl, nonce)
+            tx = txb.tx_contract_call(account.get_address(), self.address, call_data, function, arg,
+                                      amount, gas, gas_price, abi_version,
+                                      fee, ttl, nonce)
             # sign the transaction
-            tx_signed, sg, tx_hash = self.client.sign_transaction(account, tx)
+            tx_signed = self.client.sign_transaction(account, tx.tx)
             # post the transaction to the chain
-            self.client.broadcast_transaction(tx_signed, tx_hash)
+            self.client.broadcast_transaction(tx_signed.tx, tx_signed.hash)
 
             if synchronous and not self.client.blocking_mode:
-                self.client.wait_for_transaction(tx_hash) #cmk added - wait to avoid race condition in sync mode
+                self.client.wait_for_transaction(tx_signed.hash) #cmk added - wait to avoid race condition in sync mode
 
-            # unsigned transaction of the call
-            call_obj = self.client.get_transaction_info_by_hash(hash=tx_hash) if synchronous else None #cmk edited
-            return tx, tx_signed, sg, tx_hash, call_obj
+            call_obj = self.client.get_transaction_info_by_hash(hash=tx_signed.hash) if synchronous else None #cmk edited
+            return tx_signed, call_obj
+            #FIXME: This was: 
+            #return tx, tx_signed, sg, tx_hash, call_obj #old
+            #may need to refactor code to conform to new return type: (tx, tx_signed, sg, tx_hash) -> (tx_signed.tx, ??, ??, tx_signed.hash)
+
         except OpenAPIClientException as e:
             raise ContractError(e)
 
@@ -88,35 +99,41 @@ class Contract:
 
     def tx_create(self,
                   account,
-                  amount=config.CONTRACT_DEFAULT_AMOUNT,
-                  deposit=config.CONTRACT_DEFAULT_DEPOSIT,
+                  amount=defaults.CONTRACT_AMOUNT,
+                  deposit=defaults.CONTRACT_DEPOSIT,
                   init_state="()",
-                  gas=config.CONTRACT_DEFAULT_GAS,
-                  gas_price=config.CONTRACT_DEFAULT_GAS_PRICE,
-                  fee=config.DEFAULT_FEE,
-                  vm_version=config.CONTRACT_DEFAULT_VM_VERSION,
-                  tx_ttl=config.DEFAULT_TX_TTL):
+                  gas=defaults.CONTRACT_GAS,
+                  gas_price=defaults.CONTRACT_GAS_PRICE,
+                  fee=defaults.FEE,
+                  vm_version=None,
+                  abi_version=None,
+                  tx_ttl=defaults.TX_TTL):
         """
         Create a contract and deploy it to the chain
         :return: address
         """
         try:
+            # retrieve the correct vm/abi version
+            vm, abi = self._get_vm_abi_versions()
+            vm_version = vm if vm_version is None else vm_version
+            abi_version = abi if abi_version is None else abi_version
+            # encode the call data
             call_data = self.encode_calldata("init", init_state)
-
             # get the transaction builder
             txb = self.client.tx_builder
             # get the account nonce and ttl
             nonce, ttl = self.client._get_nonce_ttl(account.get_address(), tx_ttl)
             # build the transaction
-            tx, contract_id = txb.tx_contract_create(account.get_address(), self.bytecode, call_data, amount, deposit, gas, gas_price, vm_version,
-                                                     fee, ttl, nonce)
-            # sign the transaction
-            tx_signed, sg, tx_hash = self.client.sign_transaction(account, tx)
-            # post the transaction to the chain
-            self.client.broadcast_transaction(tx_signed, tx_hash)
+            tx = txb.tx_contract_create(account.get_address(), self.bytecode, call_data,
+                                        amount, deposit, gas, gas_price, vm_version, abi_version,
+                                        fee, ttl, nonce)
             # store the contract address in the instance variabl
-            self.address = contract_id
-            return tx, tx_signed, sg, tx_hash
+            self.address = hashing.contract_id(account.get_address(), nonce)
+            # sign the transaction
+            tx_signed = self.client.sign_transaction(account, tx)
+            # post the transaction to the chain
+            self.client.broadcast_transaction(tx_signed.tx, tx_signed.hash)
+            return tx
         except OpenAPIClientException as e:
             raise ContractError(e)
 
@@ -185,3 +202,13 @@ class Contract:
             return reply.data.value, reply.data.type
         except OpenAPIClientException as e:
             raise ContractError(e)
+
+    def _get_vm_abi_versions(self):
+        """
+        Check the version of the node and retrieve the correct values for abi and vm version
+        """
+        if semver.match(self.client.api_version, "<=1.4.0"):
+            return CONTRACT_ROMA_VM, CONTRACT_ROMA_ABI
+        if semver.match(self.client.api_version, "<3.0.0"):
+            return CONTRACT_MINERVA_VM, CONTRACT_MINERVA_ABI
+        raise UnsupportedNodeVersion(f"Version {self.client.api_version} is not supported")
