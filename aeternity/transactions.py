@@ -1,4 +1,5 @@
 from typing import Union, Tuple
+
 from aeternity.hashing import _int, _int_decode, _binary, _binary_decode, _id, encode, decode, encode_rlp, decode_rlp, \
     hash_encode, contract_id, _poi
 from aeternity.openapi import OpenAPICli
@@ -13,6 +14,12 @@ from dataclasses import dataclass
 
 PACK_TX = 1
 UNPACK_TX = 0
+
+
+class TxObject(NamedTuple):  # cmk added; only for type hinting purposes
+    data: dict  # transaction as dict, schema as constructed by the TxBuilder
+    tx: str  # encoded unsigned transaction
+    hash: str  # tx hash
 
 
 class TxSigner:
@@ -34,14 +41,14 @@ class TxSigner:
 
     @dataclass
     class RVSignEncodeTransaction(NamedTuple):
-        data : dict #transaction object
-        metadata : dict #as in sign_encode_transaction
-        tx : str #serialized, signed tx
-        hash : str #tx hash
-        signature : str #signature, encoded
-        network_id : str
+        data: dict  # transaction object
+        metadata: dict  # as in sign_encode_transaction
+        tx: str  # serialized, signed tx
+        hash: str  # tx hash
+        signature: str  # signature, encoded
+        network_id: str
 
-    def sign_encode_transaction(self, tx, metadata: dict = None) -> RVSignEncodeTransaction:
+    def sign_encode_transaction(self, tx: Union[TxObject, str], metadata: dict = None) -> RVSignEncodeTransaction:
         """
         Sign, encode and compute the hash of a transaction
         :param tx: the TxObject to be signed
@@ -49,9 +56,14 @@ class TxSigner:
         :return: namedtuple with the (signed and encoded) tx, the hash, (encoded) signature, network_id, and unencoded tx as 'data'
         """
         # decode the transaction if not in native mode
-        transaction = _tx_native(op=UNPACK_TX, tx=tx.tx if hasattr(tx, "tx") else tx)
-        # get the transaction as byte list
-        tx_raw = decode(transaction.tx)
+        try:
+            transaction = _tx_native(op=UNPACK_TX, tx=tx.tx if hasattr(tx, "tx") else tx)
+            # get the transaction as byte list
+            tx_raw = decode(transaction.tx)
+        except UnboundLocalError: # cmk added: temporary workaround, the above crashes when processing a txtype for which unpack is not implemented yet todo remove
+            transaction = None
+            tx_raw =  decode(tx.tx if hasattr(tx,name='tx') else tx)
+
         # sign the transaction
         signature = self.account.sign(_binary(self.network_id) + tx_raw)
         # encode the transaction
@@ -60,14 +72,14 @@ class TxSigner:
         tx_hash = TxBuilder.compute_tx_hash(encoded_signed_tx)
         # return the object
         tx = dict(
-            data=transaction.data,
+            data=transaction.data if transaction else None,  # cmk added workaround todo revert to transaction.data
             metadata=metadata,
             tx=encoded_signed_tx,
             hash=tx_hash,
             signature=encoded_signature,
             network_id=self.network_id,
         )
-        return namedtupled.map(tx, _nt_name="TxObject") #cmk note: Same classname for differently built namedtuples
+        return namedtupled.map(tx, _nt_name="TxObject")  # cmk note: Same classname for differently built namedtuples
 
     # cmk added
     ##cmk todo: adapt output format for consistence with the above... change all usages to fit ...
@@ -89,15 +101,10 @@ class TxSigner:
                 [encode("sg", signature1), encode("sg", signature2)],
                 TxBuilder.compute_tx_hash(encoded_cosigned_tx))
 
-@dataclass
-class TxObject(NamedTuple): #cmk added; only for type hinting purposes
-    data : dict     #transaction as dict, schema as constructed by the TxBuilder
-    tx : str        #encoded unsigned transaction
-    hash : str      #tx hash
 
-#cmk todo??: revert to the one-function-per-txtype structure like in commits 35589f29729dfe66097d4c50bce2a7c97e37f9d9 and older (or 6fa956abcbc70d8a5741a4a45a26d601943c211d and older)
-#The old design was more readable (especially once you delete nonnative mode)
-#Incorporate this version's deserialization feature and fee calculation feature (to provide default values for fees)
+# cmk todo??: revert to the one-function-per-txtype structure like in commits 35589f29729dfe66097d4c50bce2a7c97e37f9d9 and older (or 6fa956abcbc70d8a5741a4a45a26d601943c211d and older)
+# The old design was more readable (especially once you delete nonnative mode)
+# Incorporate this version's deserialization feature and fee calculation feature (to provide default values for fees)
 def _tx_native(op, **kwargs) -> Union[TxObject, Dict]:
     '''
     Pack (serialize) or Unpack (deserialize) a transaction.
@@ -110,7 +117,8 @@ def _tx_native(op, **kwargs) -> Union[TxObject, Dict]:
     :param kwargs:when packing: transaction, schema as constructed by the TxBuilder. When unpacking: {"tx" : serialized_tx_string}
     :return: when packing: Namedtuple (data: dict, tx : str, hash : str). when unpacking: transaction dict
     '''
-    #cmk todo proper docstrings (reST) https://www.python.org/dev/peps/pep-0287/
+
+    # cmk todo proper docstrings (reST) https://www.python.org/dev/peps/pep-0287/
     def std_fee(tx_raw, fee_idx, base_gas_multiplier=1):
         # calculates the standard minimum transaction fee
         tx_copy = tx_raw  # create a copy of the input
@@ -500,7 +508,7 @@ def _tx_native(op, **kwargs) -> Union[TxObject, Dict]:
             _id(idf.ID_TAG_CHANNEL, kwargs.get("channel_id")),
             _id(idf.ID_TAG_ACCOUNT, kwargs.get("from_id")),
             _binary(kwargs.get("payload")),
-            _poi(kwargs.get("poi")), #TODO: implement support for _poi
+            _poi(kwargs.get("poi")),  # TODO: implement support for _poi
             _int(kwargs.get("ttl")),
             _int(kwargs.get("fee")),
             _int(kwargs.get("nonce")),
@@ -514,7 +522,7 @@ def _tx_native(op, **kwargs) -> Union[TxObject, Dict]:
             _id(idf.ID_TAG_CHANNEL, kwargs.get("channel_id")),
             _id(idf.ID_TAG_ACCOUNT, kwargs.get("from_id")),
             _binary(kwargs.get("payload")),
-            _poi(kwargs.get("poi")), #TODO: implement support for _poi
+            _poi(kwargs.get("poi")),  # TODO: implement support for _poi
             _int(kwargs.get("ttl")),
             _int(kwargs.get("fee")),
             _int(kwargs.get("nonce")),
@@ -728,6 +736,7 @@ def _tx_native(op, **kwargs) -> Union[TxObject, Dict]:
     else:
         raise UnsupportedTransactionType(f"Unusupported transaction tag {tag}")
 
+
 class TxBuilder:
     """
     TxBuilder is used to build and post transactions to the chain.
@@ -748,7 +757,7 @@ class TxBuilder:
     # cmk added fixme: adapt to new rtype convention
     def tx_channel_close_solo(self, account_id: str,
                               state: Union[str, bytes],
-                              poi: str, #fixme once upstream decides on different format for poi
+                              poi: str,  # fixme once upstream decides on different format for poi
                               channel_id: str,
                               ttl: int,
                               fee: int,
@@ -758,15 +767,15 @@ class TxBuilder:
             state = decode(state)
 
         return _tx_native(PACK_TX,
-                          tag = idf.OBJECT_TAG_CHANNEL_CLOSE_SOLO_TRANSACTION,
-                          vsn = idf.VSN,
-                          payload = state, #fixme
-                          poi = poi,
-                          channel_id = channel_id,
-                          from_id = account_id, #fixme
-                          ttl = ttl,
-                          fee = fee,
-                          nonce = nonce
+                          tag=idf.OBJECT_TAG_CHANNEL_CLOSE_SOLO_TRANSACTION,
+                          vsn=idf.VSN,
+                          payload=state,  # fixme
+                          poi=poi,
+                          channel_id=channel_id,
+                          from_id=account_id,  # fixme
+                          ttl=ttl,
+                          fee=fee,
+                          nonce=nonce
                           )
 
     # cmk added
@@ -815,7 +824,7 @@ class TxBuilder:
                          channel_id: str,
                          account_id: str,
                          state: Union[str, bytes],
-                         poi: str, #fixme once upstream decides on different format for poi
+                         poi: str,  # fixme once upstream decides on different format for poi
                          ttl: int,
                          fee: int,
                          nonce: int):
@@ -827,8 +836,8 @@ class TxBuilder:
                           tag=idf.OBJECT_TAG_CHANNEL_SLASH_TRANSACTION,
                           vsn=idf.VSN,
                           channel_id=channel_id,
-                          from_id=account_id, #fixme
-                          payload=state, #fixme
+                          from_id=account_id,  # fixme
+                          payload=state,  # fixme
                           poi=poi,
                           ttl=ttl,
                           fee=fee,
@@ -853,9 +862,9 @@ class TxBuilder:
                           tag=idf.OBJECT_TAG_CHANNEL_FORCE_PROGRESS_TRANSACTION,
                           vsn=idf.VSN,
                           channel_id=channel_id,
-                          from_id=account_id, #fixme
-                          payload=state, #fixme
-                          round=new_round, #fixme
+                          from_id=account_id,  # fixme
+                          payload=state,  # fixme
+                          round=new_round,  # fixme
                           contract_call_update=contract_call_update,
                           new_state_hash=new_state_hash,
                           offchain_trees=offchain_trees,
