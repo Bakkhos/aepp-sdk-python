@@ -1,5 +1,6 @@
 from typing import Union, Tuple
-from aeternity.hashing import _int, _int_decode, _binary, _binary_decode, _id, encode, decode, encode_rlp, decode_rlp, hash_encode, contract_id
+from aeternity.hashing import _int, _int_decode, _binary, _binary_decode, _id, encode, decode, encode_rlp, decode_rlp, \
+    hash_encode, contract_id, _poi
 from aeternity.openapi import OpenAPICli
 from aeternity import identifiers as idf
 from aeternity import defaults
@@ -7,6 +8,8 @@ from aeternity.exceptions import UnsupportedTransactionType
 import rlp
 import math
 import namedtupled
+from typing import NamedTuple, Union, Dict
+from dataclasses import dataclass
 
 PACK_TX = 1
 UNPACK_TX = 0
@@ -29,12 +32,21 @@ class TxSigner:
         encoded_signature = encode(idf.SIGNATURE, signature)
         return encoded_signed_tx, encoded_signature
 
-    def sign_encode_transaction(self, tx, metadata: dict=None):
+    @dataclass
+    class RVSignEncodeTransaction(NamedTuple):
+        data : dict #transaction object
+        metadata : dict #as in sign_encode_transaction
+        tx : str #serialized, signed tx
+        hash : str #tx hash
+        signature : str #signature, encoded
+        network_id : str
+
+    def sign_encode_transaction(self, tx, metadata: dict = None) -> RVSignEncodeTransaction:
         """
         Sign, encode and compute the hash of a transaction
         :param tx: the TxObject to be signed
         :param metadata: additional data to include in the output of the signed transaction object
-        :return: encoded_signed_tx, encoded_signature, tx_hash
+        :return: namedtuple with the (signed and encoded) tx, the hash, (encoded) signature, network_id, and unencoded tx as 'data'
         """
         # decode the transaction if not in native mode
         transaction = _tx_native(op=UNPACK_TX, tx=tx.tx if hasattr(tx, "tx") else tx)
@@ -55,22 +67,63 @@ class TxSigner:
             signature=encoded_signature,
             network_id=self.network_id,
         )
-        return namedtupled.map(tx, _nt_name="TxObject")
+        return namedtupled.map(tx, _nt_name="TxObject") #cmk note: Same classname for differently built namedtuples
 
+    # cmk added
+    ##cmk todo: adapt output format for consistence with the above... change all usages to fit ...
+    def cosign_encode_transaction(self, tx, other_account):
+        """
+        Sign, encode and compute the hash of a transaction
+        :return: encoded_signed_tx, encoded_signatures, tx_hash
+        """
+        transaction = decode(tx.tx) if hasattr(tx, "tx") else decode(tx)
+        # sign with both keys
+        signature1 = self.account.sign(_binary(self.network_id) + transaction)
+        signature2 = other_account.sign(_binary(self.network_id) + transaction)
+        # encode
+        tag = bytes([idf.OBJECT_TAG_SIGNED_TRANSACTION])
+        vsn = bytes([idf.VSN])
+        encoded_cosigned_tx = encode_rlp("tx", [tag, vsn, sorted([signature1, signature2]), transaction])
 
-def _tx_native(op, **kwargs):
+        return (encoded_cosigned_tx,
+                [encode("sg", signature1), encode("sg", signature2)],
+                TxBuilder.compute_tx_hash(encoded_cosigned_tx))
 
+@dataclass
+class TxObject(NamedTuple): #cmk added; only for type hinting purposes
+    data : dict     #transaction as dict, schema as constructed by the TxBuilder
+    tx : str        #encoded unsigned transaction
+    hash : str      #tx hash
+
+#cmk todo??: revert to the one-function-per-txtype structure like in commits 35589f29729dfe66097d4c50bce2a7c97e37f9d9 and older (or 6fa956abcbc70d8a5741a4a45a26d601943c211d and older)
+#The old design was more readable (especially once you delete nonnative mode)
+#Incorporate this version's deserialization feature and fee calculation feature (to provide default values for fees)
+def _tx_native(op, **kwargs) -> Union[TxObject, Dict]:
+    '''
+    Pack (serialize) or Unpack (deserialize) a transaction.
+
+    Deserialized form is a dict as expected by the functions in this module.
+
+    cmk added docstring, type signature 20/3/2019
+
+    :param op: PACK_TX or UNPACK_TX
+    :param kwargs:when packing: transaction, schema as constructed by the TxBuilder. When unpacking: {"tx" : serialized_tx_string}
+    :return: when packing: Namedtuple (data: dict, tx : str, hash : str). when unpacking: transaction dict
+    '''
+    #cmk todo proper docstrings (reST) https://www.python.org/dev/peps/pep-0287/
     def std_fee(tx_raw, fee_idx, base_gas_multiplier=1):
         # calculates the standard minimum transaction fee
         tx_copy = tx_raw  # create a copy of the input
         tx_copy[fee_idx] = _int(0, 8)  # replace fee with a byte array of lenght 8
-        return (defaults.BASE_GAS * base_gas_multiplier + len(rlp.encode(tx_copy)) * defaults.GAS_PER_BYTE) * defaults.GAS_PRICE
+        return (defaults.BASE_GAS * base_gas_multiplier + len(
+            rlp.encode(tx_copy)) * defaults.GAS_PER_BYTE) * defaults.GAS_PRICE
 
     def contract_fee(tx_raw, fee_idx, gas, base_gas_multiplier=1):
         # estimate the contract creation fee
         tx_copy = tx_raw  # create a copy of the input
         tx_copy[fee_idx] = _int(0, 8)  # replace fee with a byte array of lenght 8
-        return (defaults.BASE_GAS * base_gas_multiplier + gas + len(rlp.encode(tx_copy)) * defaults.GAS_PER_BYTE) * defaults.GAS_PRICE
+        return (defaults.BASE_GAS * base_gas_multiplier + gas + len(
+            rlp.encode(tx_copy)) * defaults.GAS_PER_BYTE) * defaults.GAS_PRICE
 
     def oracle_fee(tx_raw, fee_idx, relative_ttl):
         # estimate oracle fees
@@ -95,7 +148,7 @@ def _tx_native(op, **kwargs):
     # prepare tag and version
     if op == PACK_TX:
         tag = kwargs.get("tag", 0)
-        vsn = kwargs.get("vsn", 1)
+        vsn = kwargs.get("vsn", 1)  # cmk: should this be idf.VSN?
         tx_data = kwargs
     elif op == UNPACK_TX:
         tx_native = decode_rlp(kwargs.get("tx", []))
@@ -204,6 +257,7 @@ def _tx_native(op, **kwargs):
                     "contract_pubkey": idf.ID_TAG_CONTRACT,
                     "channel_pubkey": idf.ID_TAG_CHANNEL
                 }.get(pointer.get("key"))
+
             ptrs = [[_binary(p.get("key")), _id(pointer_tag(p), p.get("id"))] for p in kwargs.get("pointers", [])]
             # then build the transaction
             tx_native = [
@@ -314,7 +368,7 @@ def _tx_native(op, **kwargs):
                 _binary(decode(kwargs.get("call_data"))),
             ]
             # TODO: verify the fee caluclation for the contract
-            min_fee = contract_fee(tx_native, tx_field_fee_index, kwargs.get("gas"),  base_gas_multiplier=5)
+            min_fee = contract_fee(tx_native, tx_field_fee_index, kwargs.get("gas"), base_gas_multiplier=5)
         elif op == UNPACK_TX:  # unpack transaction
             vml = len(tx_native[5])  # this is used to extract the abi and vm version from the 5th field
             tx_data = dict(
@@ -355,7 +409,7 @@ def _tx_native(op, **kwargs):
                 _int(kwargs.get("gas_price")),
                 _binary(decode(kwargs.get("call_data"))),
             ]
-            min_fee = contract_fee(tx_native, tx_field_fee_index, kwargs.get("gas"),  base_gas_multiplier=30)
+            min_fee = contract_fee(tx_native, tx_field_fee_index, kwargs.get("gas"), base_gas_multiplier=30)
         elif op == UNPACK_TX:  # unpack transaction
             vml = len(tx_native[5])  # this is used to extract the abi and vm version from the 5th field
             tx_data = dict(
@@ -446,7 +500,7 @@ def _tx_native(op, **kwargs):
             _id(idf.ID_TAG_CHANNEL, kwargs.get("channel_id")),
             _id(idf.ID_TAG_ACCOUNT, kwargs.get("from_id")),
             _binary(kwargs.get("payload")),
-            # _poi(kwargs.get("poi")), TODO: implement support for _poi
+            _poi(kwargs.get("poi")), #TODO: implement support for _poi
             _int(kwargs.get("ttl")),
             _int(kwargs.get("fee")),
             _int(kwargs.get("nonce")),
@@ -460,7 +514,7 @@ def _tx_native(op, **kwargs):
             _id(idf.ID_TAG_CHANNEL, kwargs.get("channel_id")),
             _id(idf.ID_TAG_ACCOUNT, kwargs.get("from_id")),
             _binary(kwargs.get("payload")),
-            # _poi(kwargs.get("poi")), TODO: implement support for _poi
+            _poi(kwargs.get("poi")), #TODO: implement support for _poi
             _int(kwargs.get("ttl")),
             _int(kwargs.get("fee")),
             _int(kwargs.get("nonce")),
@@ -674,25 +728,6 @@ def _tx_native(op, **kwargs):
     else:
         raise UnsupportedTransactionType(f"Unusupported transaction tag {tag}")
 
-    #cmk added
-    def cosign_encode_transaction(self, tx, other_account):
-        """
-        Sign, encode and compute the hash of a transaction
-        :return: encoded_signed_tx, encoded_signatures, tx_hash
-        """
-        transaction = decode(tx.tx) if hasattr(tx, "tx") else decode(tx)
-        #sign with both keys
-        signature1 = self.account.sign(_binary(self.network_id) + transaction)
-        signature2 = other_account.sign(_binary(self.network_id) + transaction)
-        #encode
-        tag = bytes([idf.OBJECT_TAG_SIGNED_TRANSACTION])
-        vsn = bytes([idf.VSN])
-        encoded_cosigned_tx = encode_rlp("tx", [tag, vsn, sorted([signature1, signature2]), transaction])
-
-        return (encoded_cosigned_tx,
-                [encode("sg", signature1), encode("sg", signature2)],
-                TxBuilder.compute_tx_hash(encoded_cosigned_tx))
-
 class TxBuilder:
     """
     TxBuilder is used to build and post transactions to the chain.
@@ -710,196 +745,125 @@ class TxBuilder:
         tx_raw = decode(encoded_tx)
         return hash_encode(idf.TRANSACTION_HASH, tx_raw)
 
-    #cmk added
-    def tx_channel_close_solo(self, account_id : str,
-                              state : Union[str, bytes],
-                              poi : str,
-                              channel_id : str,
-                              ttl : int,
-                              fee : int,
-                              nonce : int):
+    # cmk added fixme: adapt to new rtype convention
+    def tx_channel_close_solo(self, account_id: str,
+                              state: Union[str, bytes],
+                              poi: str, #fixme once upstream decides on different format for poi
+                              channel_id: str,
+                              ttl: int,
+                              fee: int,
+                              nonce: int):
 
-        if self.native_transactions:
-            if isinstance(state, str):
-                state = decode(state)
+        if isinstance(state, str):
+            state = decode(state)
 
-            tx = [
-                _int(idf.OBJECT_TAG_CHANNEL_CLOSE_SOLO_TRANSACTION),
-                _int(idf.VSN),
-                _id(idf.ID_TAG_CHANNEL, channel_id),
-                _id(idf.ID_TAG_ACCOUNT, account_id), #from_id
-                _binary(state), #payload
-                _binary(decode(poi)),
-                _int(ttl),
-                _int(fee),
-                _int(nonce)
-            ]
-            tx = encode_rlp("tx", tx)
-            return tx
-        else:
-            if not isinstance(state, str):
-                state = encode("tx", state)
+        return _tx_native(PACK_TX,
+                          tag = idf.OBJECT_TAG_CHANNEL_CLOSE_SOLO_TRANSACTION,
+                          vsn = idf.VSN,
+                          payload = state, #fixme
+                          poi = poi,
+                          channel_id = channel_id,
+                          from_id = account_id, #fixme
+                          ttl = ttl,
+                          fee = fee,
+                          nonce = nonce
+                          )
 
-            tx = self.api.post_channel_close_solo(body={
-                "from_id": account_id,
-                "payload": state,
-                "fee": fee,
-                "poi": poi,
-                "channel_id": channel_id,
-                "ttl": ttl,
-                "nonce": nonce
-            }).tx
-
-            #compensate bug in api
-            tx = decode_rlp(tx)
-            tx[4] = decode(tx[4].decode("UTF-8")) #the field 4, payload is a string such as "tx_...." encoding the payload when it should be a binary()
-            tx = encode_rlp("tx",tx)
-            return tx
-
-    #cmk added
+    # cmk added
     def tx_channel_settle(self,
                           channel_id: str,
-                          account_id : str,
-                          initiator_amount_final : int,
-                          responder_amount_final : int,
-                          ttl : int,
-                          fee : int,
-                          nonce : int):
+                          account_id: str,
+                          initiator_amount_final: int,
+                          responder_amount_final: int,
+                          ttl: int,
+                          fee: int,
+                          nonce: int):
 
-        if self.native_transactions:
-            tx = [
-                _int(idf.OBJECT_TAG_CHANNEL_SETTLE_TRANSACTION),
-                _int(idf.VSN),
-                _id(idf.ID_TAG_CHANNEL, channel_id),
-                _id(idf.ID_TAG_ACCOUNT, account_id), #from_id
-                _int(initiator_amount_final),
-                _int(responder_amount_final),
-                _int(ttl),
-                _int(fee),
-                _int(nonce)
-            ]
-            return encode_rlp("tx", tx)
-        else:
-            tx = self.api.post_channel_settle(body={
-                "from_id": account_id,
-                "responder_amount_final": responder_amount_final,
-                "fee": fee,
-                "initiator_amount_final": initiator_amount_final,
-                "channel_id": channel_id,
-                "ttl": ttl,
-                "nonce": nonce
-            }).tx
-            return tx
+        return _tx_native(PACK_TX,
+                          tag=idf.OBJECT_TAG_CHANNEL_SETTLE_TRANSACTION,
+                          vsn=idf.VSN,
+                          channel_id=channel_id,
+                          from_id=account_id,  # fixme
+                          initiator_amount_final=initiator_amount_final,
+                          responder_amount_final=responder_amount_final,
+                          ttl=ttl,
+                          fee=fee,
+                          nonce=nonce)
 
     def tx_channel_close_mutual(self,
-                                account_id : str,
-                                channel_id : str,
-                                initiator_amount_final : int,
-                                responder_amount_final : int,
-                                ttl : int,
-                                fee : int,
-                                nonce : int):
-        if self.native_transactions:
-            tx = [
-                _int(idf.OBJECT_TAG_CHANNEL_CLOSE_MUTUAL_TRANSACTION),
-                _int(idf.VSN),
-                _id(idf.ID_TAG_CHANNEL, channel_id),
-                _id(idf.ID_TAG_ACCOUNT, account_id),
-                _int(initiator_amount_final),
-                _int(responder_amount_final),
-                _int(ttl),
-                _int(fee),
-                _int(nonce)
-            ]
-            return encode_rlp("tx", tx)
-        else:
-            tx = self.api.post_channel_close_mutual(body={
-                "from_id": account_id,
-                "responder_amount_final": initiator_amount_final,
-                "fee": fee,
-                "initiator_amount_final": responder_amount_final,
-                "channel_id": channel_id,
-                "ttl": ttl,
-                "nonce" : nonce
-            }).tx
-        return tx
+                                account_id: str,
+                                channel_id: str,
+                                initiator_amount_final: int,
+                                responder_amount_final: int,
+                                ttl: int,
+                                fee: int,
+                                nonce: int):
 
-    #cmk added
+        return _tx_native(PACK_TX,
+                          tag=idf.OBJECT_TAG_CHANNEL_CLOSE_MUTUAL_TRANSACTION,
+                          vsn=idf.VSN,
+                          channel_id=channel_id,
+                          from_id=account_id,  # fixme
+                          initiator_amount_final=initiator_amount_final,
+                          responder_amount_final=responder_amount_final,
+                          ttl=ttl,
+                          fee=fee,
+                          nonce=nonce)
+
+    # cmk added fixme: adapt to new rtype convention
     def tx_channel_slash(self,
-                         channel_id : str,
-                         account_id : str,
-                         state : Union[str, bytes],
-                         poi : str,
-                         ttl : int,
-                         fee : int,
-                         nonce : int):
-        if self.native_transactions:
-            if isinstance(state, str):
-                state = decode(state)
+                         channel_id: str,
+                         account_id: str,
+                         state: Union[str, bytes],
+                         poi: str, #fixme once upstream decides on different format for poi
+                         ttl: int,
+                         fee: int,
+                         nonce: int):
 
-            tx = [
-                _int(idf.OBJECT_TAG_CHANNEL_SLASH_TRANSACTION),
-                _int(idf.VSN),
-                _id(idf.ID_TAG_CHANNEL, channel_id),
-                _id(idf.ID_TAG_ACCOUNT, account_id), #from_id
-                _binary(state), #payload
-                _binary(decode(poi)),
-                _int(ttl),
-                _int(fee),
-                _int(nonce)
-            ]
-            return encode_rlp("tx", tx)
-        else:
-            if not isinstance(state, str):
-                state = encode("tx", state)
+        if isinstance(state, str):
+            state = decode(state)
 
-            tx = self.api.post_channel_slash(body={
-                "from_id" : account_id,
-                "channel_id" : channel_id,
-                "payload" : state,
-                "poi" : poi,
-                "ttl" : ttl,
-                "fee" : fee,
-                "nonce" : nonce
-            }).tx
+        return _tx_native(PACK_TX,
+                          tag=idf.OBJECT_TAG_CHANNEL_SLASH_TRANSACTION,
+                          vsn=idf.VSN,
+                          channel_id=channel_id,
+                          from_id=account_id, #fixme
+                          payload=state, #fixme
+                          poi=poi,
+                          ttl=ttl,
+                          fee=fee,
+                          nonce=nonce)
 
-            return tx
-
-    #cmk added - untested - speculative
+    # cmk added - untested - speculative fixme
     def tx_channel_solo_force_progress(self,
-                                  channel_id : str,
-                                  account_id : str,
-                                  state : Union[str, bytes],
-                                  new_round : int,
-                                  contract_call_update : str,
-                                  new_state_hash : str,
-                                  offchain_trees : str,
-                                  ttl : int,
-                                  fee : int,
-                                  nonce : int):
-        if self.native_transactions:
-            if isinstance(state, str):
-                state = decode(state)
+                                       channel_id: str,
+                                       account_id: str,
+                                       state: Union[str, bytes],
+                                       new_round: int,
+                                       contract_call_update: str,
+                                       new_state_hash: str,
+                                       offchain_trees: str,
+                                       ttl: int,
+                                       fee: int,
+                                       nonce: int):
+        if isinstance(state, str):
+            state = decode(state)
 
-            tx = [ _int(idf.OBJECT_TAG_CHANNEL_FORCE_PROGRESS_TRANSACTION),
-                   _int(idf.VSN),
-                   _id(idf.ID_TAG_CHANNEL, channel_id),
-                   _id(idf.ID_TAG_ACCOUNT, account_id), #from_id
-                   _binary(state), #payload
-                   _int(new_round), #round
-                   _binary(decode(contract_call_update)),
-                   _binary(decode(new_state_hash)),
-                   _binary(decode(offchain_trees)), #actually trees() format and not binary
-                   _int(ttl),
-                   _int(fee),
-                   _int(nonce)
-                   ]
-            return tx
-        else:
-            raise NotImplementedError("This version of SDK assumes Epoch 1.1.1, whose REST API does not implement " +
-                                      "creation of Channel Force Progress Transactions")
+        return _tx_native(PACK_TX,
+                          tag=idf.OBJECT_TAG_CHANNEL_FORCE_PROGRESS_TRANSACTION,
+                          vsn=idf.VSN,
+                          channel_id=channel_id,
+                          from_id=account_id, #fixme
+                          payload=state, #fixme
+                          round=new_round, #fixme
+                          contract_call_update=contract_call_update,
+                          new_state_hash=new_state_hash,
+                          offchain_trees=offchain_trees,
+                          ttl=ttl,
+                          fee=fee,
+                          nonce=nonce)
 
-    def tx_spend(self, sender_id, recipient_id, amount, payload, fee, ttl, nonce)-> tuple:
+    def tx_spend(self, sender_id, recipient_id, amount, payload, fee, ttl, nonce) -> tuple:
         """
         create a spend transaction
         :param sender_id: the public key of the sender
@@ -927,7 +891,7 @@ class TxBuilder:
 
     # NAMING #
 
-    def tx_name_preclaim(self, account_id, commitment_id, fee, ttl, nonce)-> tuple:
+    def tx_name_preclaim(self, account_id, commitment_id, fee, ttl, nonce) -> tuple:
         """
         create a preclaim transaction
         :param account_id: the account registering the name
@@ -948,7 +912,7 @@ class TxBuilder:
         return _tx_native(op=PACK_TX, **body)
         # sreturn self.api.post_name_preclaim(body=body).tx
 
-    def tx_name_claim(self, account_id, name, name_salt, fee, ttl, nonce)-> tuple:
+    def tx_name_claim(self, account_id, name, name_salt, fee, ttl, nonce) -> tuple:
         """
         create a preclaim transaction
         :param account_id: the account registering the name
@@ -971,7 +935,7 @@ class TxBuilder:
         return _tx_native(op=PACK_TX, **body)
         # return self.api.post_name_claim(body=body).tx
 
-    def tx_name_update(self, account_id, name_id, pointers, name_ttl, client_ttl, fee, ttl, nonce)-> tuple:
+    def tx_name_update(self, account_id, name_id, pointers, name_ttl, client_ttl, fee, ttl, nonce) -> tuple:
         """
         create an update transaction
         :param account_id: the account updating the name
@@ -998,7 +962,7 @@ class TxBuilder:
         return _tx_native(op=PACK_TX, **body)
         # return self.api.post_name_update(body=body).tx
 
-    def tx_name_transfer(self, account_id, name_id, recipient_id, fee, ttl, nonce)-> tuple:
+    def tx_name_transfer(self, account_id, name_id, recipient_id, fee, ttl, nonce) -> tuple:
         """
         create a transfer transaction
         :param account_id: the account transferring the name
@@ -1021,7 +985,7 @@ class TxBuilder:
         return _tx_native(op=PACK_TX, **body)
         # return self.api.post_name_transfer(body=body).tx
 
-    def tx_name_revoke(self, account_id, name_id, fee, ttl, nonce)-> tuple:
+    def tx_name_revoke(self, account_id, name_id, fee, ttl, nonce) -> tuple:
         """
         create a revoke transaction
         :param account_id: the account revoking the name
@@ -1045,7 +1009,8 @@ class TxBuilder:
 
     # CONTRACTS
 
-    def tx_contract_create(self, owner_id, code, call_data, amount, deposit, gas, gas_price, vm_version, abi_version, fee, ttl, nonce)-> tuple:
+    def tx_contract_create(self, owner_id, code, call_data, amount, deposit, gas, gas_price, vm_version, abi_version,
+                           fee, ttl, nonce) -> tuple:
         """
         Create a contract transaction
         :param owner_id: the account creating the contract
@@ -1061,26 +1026,7 @@ class TxBuilder:
         :param ttl: the ttl of the transaction
         :param nonce: the nonce of the account for the transaction
         """
-#        if self.native_transactions: #cmk fixed errors
-#            tx = [
-#                _int(idf.OBJECT_TAG_CONTRACT_CREATE_TRANSACTION),
-#                _int(idf.VSN),
-#                _id(idf.ID_TAG_ACCOUNT, account_id),
-#                _int(nonce),
-#                _binary(decode(code)),       #cmk added decode()
-#                _int(vm_version),
-#                _int(fee),
-#                _int(ttl),
-#                _int(deposit),
-#                _int(amount),
-#                _int(gas),
-#                _int(gas_price),
-#                _binary(decode(call_data)), #cmk added decode()
-#            ]
-#            return encode_rlp(idf.TRANSACTION, tx), contract_id(account_id, nonce)
-# FIXME: did upsteam's 'refactoring' break my fixes (above)? Or does it actually work that way? How does the _tx_native method know what to decode and what not?
-# Also it apparently now knows what is an _int and what is a _binary etc... it must have a huge switch on tx type? But then why have this method here at all?
-# All it still does is to convert parameters into a dict... pointless indirection, and pointless introduction of yet another tx encoding (the intermediate dict passed by this function to _tx_native)
+        #       return encode_rlp(idf.TRANSACTION, tx), contract_id(account_id, nonce)
         body = dict(
             tag=idf.OBJECT_TAG_CONTRACT_CREATE_TRANSACTION,
             vsn=idf.VSN,
@@ -1100,7 +1046,8 @@ class TxBuilder:
         return _tx_native(op=PACK_TX, **body)
         # return tx.tx, tx.contract_id
 
-    def tx_contract_call(self, caller_id, contract_id, call_data, function, arg, amount, gas, gas_price, abi_version, fee, ttl, nonce)-> tuple:
+    def tx_contract_call(self, caller_id, contract_id, call_data, function, arg, amount, gas, gas_price, abi_version,
+                         fee, ttl, nonce) -> tuple:
         """
         Create a contract call
         :param caller_id: the account creating the contract
@@ -1117,23 +1064,6 @@ class TxBuilder:
         :param ttl: the ttl of the transaction
         :param nonce: the nonce of the account for the transaction
         """
-#        if self.native_transactions: #cmk fixed
-#            tx = [
-#                _int(idf.OBJECT_TAG_CONTRACT_CALL_TRANSACTION),
-#                _int(idf.VSN),
-#                _id(idf.ID_TAG_ACCOUNT, account_id),
-#                _int(nonce),
-#                _id(idf.ID_TAG_CONTRACT, contract_id),
-#                _int(vm_version),
-#                _int(fee),
-#                _int(ttl),
-#                _int(amount),
-#                _int(gas),
-#                _int(gas_price),
-#                _binary(decode(call_data)), #cmk added decode()
-#            ]
-#            return encode_rlp(idf.TRANSACTION, tx)
-#        # use internal endpoints transaction
         body = dict(
             tag=idf.OBJECT_TAG_CONTRACT_CALL_TRANSACTION,
             vsn=idf.VSN,
@@ -1150,13 +1080,14 @@ class TxBuilder:
         )
         return _tx_native(op=PACK_TX, **body)
         # return self.api.post_contract_call(body=body).tx
+        # cmk note: this was: return encode_rlp(idf.TRANSACTION, tx)
 
     # ORACLES
 
     def tx_oracle_register(self, account_id,
                            query_format, response_format,
                            query_fee, ttl_type, ttl_value, vm_version,
-                           fee, ttl, nonce)-> tuple:
+                           fee, ttl, nonce) -> tuple:
         """
         Create a register oracle transaction
         """
@@ -1181,7 +1112,7 @@ class TxBuilder:
     def tx_oracle_query(self, oracle_id, sender_id, query,
                         query_fee, query_ttl_type, query_ttl_value,
                         response_ttl_type, response_ttl_value,
-                        fee, ttl, nonce)-> tuple:
+                        fee, ttl, nonce) -> tuple:
         """
         Create a oracle query transaction
         """
@@ -1211,7 +1142,7 @@ class TxBuilder:
 
     def tx_oracle_respond(self, oracle_id, query_id, response,
                           response_ttl_type, response_ttl_value,
-                          fee, ttl, nonce)-> tuple:
+                          fee, ttl, nonce) -> tuple:
         """
         Create a oracle response transaction
         """
@@ -1235,7 +1166,7 @@ class TxBuilder:
 
     def tx_oracle_extend(self, oracle_id,
                          ttl_type, ttl_value,
-                         fee, ttl, nonce)-> tuple:
+                         fee, ttl, nonce) -> tuple:
         """
         Create a oracle extends transaction
         """
@@ -1262,5 +1193,6 @@ class TxBuilderDebug:
         :param native: if the transactions should be built by the sdk (True) or requested to the debug api (False)
         """
         if api is None:
-            raise ValueError("A initialized api rest client has to be provided to build a transaction using the node internal API ")
+            raise ValueError(
+                "A initialized api rest client has to be provided to build a transaction using the node internal API ")
         self.api = api

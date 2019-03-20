@@ -179,6 +179,15 @@ def _binary(val):
         return val
     raise ValueError("Byte serialization not supported")
 
+#cmk added; cmk fixme: remove this placeholder once upstream establishes a python format for POIs
+def _poi(val : str) -> bytes:
+    '''
+    Decode a poi serialization string to the bytes object that is used in creating poi-related transactions
+    :param encoded_poi:
+    :return:
+    '''
+    return _binary(decode(val))
+
 
 def _binary_decode(data, data_type=None):
     """
